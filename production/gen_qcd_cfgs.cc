@@ -378,9 +378,36 @@ int main(int argc, char **argv) {
                      SchurDifferentiableOperator<WilsonImplF>>
       CG_md(cg_md_tol, cg_max, 50, &RBGridF, SchurOpD, SchurOpF);
 
-  // Single Nf=3 logdet on the EE block (replaces Light Nf=2 + Strange Nf=1).
-  QCDLogDetCloverEOAction<WilsonImplR> LogDet(FermOp, 3);
+  // Single Nf=3 logdet (replaces Light Nf=2 + Strange Nf=1), the partner of the three
+  // one-flavour pseudofermions below: the EE block when they live on the ODD sites (default and
+  // QUDA_SOLVER: det S_oo = det M / det M_ee), the OO block when they live on the EVEN sites
+  // (QUDA_FORCE / QUDA_FORCE_PRIMITIVES, matpc EVEN_EVEN_ASYMMETRIC: det S_ee = det M / det M_oo).
+  // With a clover term det M_ee != det M_oo, so the pairing is physics, not convention; the even
+  // block with even pseudofermions samples |det M| (det M_ee / det M_oo)^3 (grid_qcd docs
+  // 2026_10_02_strange_logdet_parity_mismatch.md, L189; fixed 2026-10-02).
+  // HASEN_GRID_STRANGE_LOGDET_ODD=0|1 overrides the pairing, for comparison runs only.
+  const bool nf3_even_pf = [] {
+#ifdef GRID_HAVE_QUDA
+    if (std::getenv("QUDA_FORCE") != nullptr) return true;
+    if (std::getenv("QUDA_FORCE_PRIMITIVES") != nullptr) return true;
+#endif
+    return false;
+  }();
+  const bool nf3_logdet_odd = [nf3_even_pf] {
+    const char *e = std::getenv("HASEN_GRID_STRANGE_LOGDET_ODD");
+    if (e && e[0] == '1') return true;
+    if (e && e[0] == '0') return false;
+    return nf3_even_pf;
+  }();
+  QCDLogDetCloverEOAction<WilsonImplR> LogDet(FermOp, 3, nf3_logdet_odd ? Odd : Even);
   LogDet.is_smeared = true;
+  std::cout << GridLogMessage << "[LogDet Nf=3] block = " << (nf3_logdet_odd ? "M_oo" : "M_ee")
+            << " (pseudofermions on " << (nf3_even_pf ? "EVEN" : "ODD") << " sites"
+            << (nf3_logdet_odd == nf3_even_pf ? ", correctly paired)" : ")") << std::endl;
+  if (nf3_logdet_odd != nf3_even_pf)
+    std::cout << GridLogMessage
+              << "[LogDet Nf=3] WARNING: HASEN_GRID_STRANGE_LOGDET_ODD overrides the pairing: this"
+              << " run does not sample the target ensemble (L189). Comparison runs only." << std::endl;
 
   // Three independent 1-flavor rational PFs at single mass.  Chroma rat
   // params from .lime XML on this ensemble: lowerMin=0.0001, upperMax=32,

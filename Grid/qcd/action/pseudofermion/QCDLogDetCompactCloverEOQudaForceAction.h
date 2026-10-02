@@ -27,6 +27,12 @@
 // Corrected formula csw^1 with C=0.125 = 0.10005525*csw_16 gives factor~1.0000
 // at both csw values (residual <3e-5 at 48^3).
 //
+// Parity (2026-10-02, fourth constructor argument, default Even = everything above, unchanged):
+// Odd carries -Nf ln det M_oo instead, the partner of an EVEN-checkerboard pseudofermion (the
+// QUDA_FORCE strange, matpc EVEN_EVEN_ASYMMETRIC).  The base class evaluates S() and the Grid
+// force on M_oo; the QUDA call traces on the odd block via matpc EVEN_EVEN_ASYMMETRIC; the
+// coefficient is the same (__docs/2026_10_02_strange_logdet_parity_mismatch.md).
+//
 // Residency: this monomial owns its clover.  The base LogDet action does not
 // load QUDA; and a neighbouring rung solver's resident clover is at a DIFFERENT
 // mass (kappa enters the clover), so we cannot borrow it.  We build our own
@@ -67,14 +73,25 @@ class QCDLogDetCompactCloverEOQudaForceAction
   typedef typename Base::FermionOperator FermionOperator;
   typedef typename Impl::GaugeField GaugeField;
 
+  // parity: the clover block whose log-det this monomial carries, forwarded to the Grid base
+  // (S(), the compare/fallback deriv).  Even (default) = the historical even block, byte-identical;
+  // Odd = M_oo, the partner of an EVEN-checkerboard pseudofermion (QUDA_FORCE strange,
+  // det S_ee = det M / det M_oo; __docs/2026_10_02_strange_logdet_parity_mismatch.md).
   QCDLogDetCompactCloverEOQudaForceAction(FermionOperator &Op, int nf,
-                                          const QudaCloverParams &qp)
-      : Base(Op, nf), nf_(nf) {
+                                          const QudaCloverParams &qp, int parity = Even)
+      : Base(Op, nf, parity), nf_(nf) {
     Quda::initialize(-1, nullptr, Op.GaugeGrid());
     QudaCloverMultiShiftSpec spec;
     spec.shifts     = {0.0};
     spec.tols       = {1e-8};
-    spec.matpc_type = QUDA_MATPC_ODD_ODD_ASYMMETRIC;  // -> trace on EVEN block
+    // computeCloverLogDetForceQuda (Grid/util/QudaForcePrimitives.h) traces Tr(σ·A^{-1}) on the
+    // parity OPPOSITE to the matpc and accepts both asymmetric types: ODD_ODD -> EVEN block
+    // (historical), EVEN_EVEN -> ODD block.  The matpc only feeds that parity choice here (this
+    // loader never solves); loadCloverQuda builds the clover on both parities either way (the
+    // inverse stored, or under QUDA_CLOVER_DYNAMIC formed inside the trace kernel at the traced
+    // parity), and sigma_trace_coeff in deriv() does not depend on the parity.
+    spec.matpc_type = (parity == Odd) ? QUDA_MATPC_EVEN_EVEN_ASYMMETRIC   // -> trace on ODD block
+                                      : QUDA_MATPC_ODD_ODD_ASYMMETRIC;   // -> trace on EVEN block
     QudaCloverParams p = qp;
     p.use_multigrid = false;
     loader_ = std::make_unique<QudaCloverMultiShiftInverter>(

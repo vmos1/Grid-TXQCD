@@ -307,7 +307,9 @@ class OneFlavourSchurCloverQudaForceRationalActionMP
     } else {
       // multiplicity=0: skip QUDA's σ_μν·F_μν trace term — that's the
       // LogDet(M_oo) derivative (hep-lat/0112051), which Grid handles
-      // SEPARATELY via OneFlavourSchurCloverDeterminantEven action class.
+      // SEPARATELY via the log-det monomial with parity Odd
+      // (QCDLogDetCompactCloverEO{,QudaForce}Action; before 2026-10-02 the
+      // drivers paired this class with the EVEN block, L189).
       // Including it here would double-count.  QUDA_FORCE_DBG_TRACE=1
       // re-enables for diagnostic tests.
       double mult = std::getenv("QUDA_FORCE_DBG_TRACE") ? 1.0 : 0.0;

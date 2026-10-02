@@ -1,10 +1,13 @@
 #pragma once
 // EVEN-parity variant of OneFlavourSchurCloverRationalAction.
 //
-// Identical action — the partition function is unchanged whether we sample
-// PhiOdd ~ exp[-φ† (M_pc_oo†M_pc_oo)^(-1/2) φ] or
-// PhiEven ~ exp[-φ† (M_pc_ee†M_pc_ee)^(-1/2) φ], because det(M_pc_oo) =
-// det(M_pc_ee) by the Schur identity.
+// NOT the identical action on its own (corrected 2026-10-02): det(M_pc_oo) = det M / det M_ee
+// and det(M_pc_ee) = det M / det M_oo, and with a clover term det M_ee != det M_oo. Sampling
+// PhiEven ~ exp[-φ† (M_pc_ee†M_pc_ee)^(-1/2) φ] instead of PhiOdd therefore requires the
+// partner log-det monomial on the OTHER block: -ln|det M_oo| (QCDLogDet*CloverEOAction with
+// parity Odd), not the even block it was paired with from 2026-06-24 to 2026-10-02 (that
+// sampled |det M| det M_ee / det M_oo; grid_qcd docs
+// 2026_10_02_strange_logdet_parity_mismatch.md, L189). The drivers pair the two automatically.
 //
 // Reason for an even-parity variant: QUDA's `computeCloverForceQuda`
 // hardcodes EVEN_EVEN_ASYMMETRIC matpc and expects the X_k solutions on

@@ -18,6 +18,21 @@
 //
 // det(M) = det(Mee) * det(Mpc)
 // For Nf=2: S_logdet = -ln det(Mee†Mee) = -2 Σ_{x∈even} ln|det(Mee(x))|
+//
+// Parity (constructor argument, default Even = the behaviour above, byte-identical): the block
+// whose log-det this monomial carries must be the one the partner pseudofermion's Schur complement
+// divides out.  Odd-checkerboard pseudofermion (Grid's SchurDiagMooee on Odd, the MP strange):
+// det S_oo = det M / det Mee -> Even.  Even-checkerboard pseudofermion (Schur on Even,
+// OneFlavourSchurCloverRationalActionEven, and the QUDA strange force path
+// OneFlavourSchurCloverQudaForceRationalActionMP, matpc EVEN_EVEN_ASYMMETRIC):
+// det S_ee = det M / det Moo -> Odd.  With clover, det Mee != det Moo (site-local blocks
+// (4+m) + csw/2 σF on different sites), so the pairing is physics, not convention
+// (__docs/2026_10_02_strange_logdet_parity_mismatch.md).  Odd: S() and both deriv paths run the
+// same code on the odd block (DiagonalOdd/TriangleOdd, DiagonalInvOdd/TriangleInvOdd); Lambda
+// lives on odd sites, Even = 0.  Ported from the pure-Grid carried copy
+// (grid-lqcd-workflow/5_studies/hasenbusch_tune/include/..., exactness check there:
+// src/logdet_parity/test_logdet_parity.cc, S_odd(U) == S_even(U shifted by one site in x), and
+// likewise the force, to roundoff).
 
 #include <Grid/qcd/action/fermion/CompactWilsonCloverFermion.h>
 #include <Grid/algorithms/blas/BatchedBlas.h>
@@ -40,8 +55,10 @@ public:
 
   typedef CompactWilsonCloverFermion<Impl, CloverHelpers> FermionOperator;
 
-  QCDLogDetCompactCloverEOAction(FermionOperator &Op, int nf = 2)
-      : FermOp(Op), Nf(nf) {}
+  QCDLogDetCompactCloverEOAction(FermionOperator &Op, int nf = 2, int parity = Even)
+      : FermOp(Op), Nf(nf), Parity(parity) {
+    GRID_ASSERT(parity == Even || parity == Odd);
+  }
 
   ~QCDLogDetCompactCloverEOAction() {
     if (n_deriv_ > 0) {
@@ -58,7 +75,10 @@ public:
     }
   }
 
-  std::string action_name() override { return "QCDLogDetCompactCloverEOAction"; }
+  // Even keeps the historical name (log lines unchanged); Odd says which block it carries.
+  std::string action_name() override {
+    return Parity == Odd ? "QCDLogDetCompactCloverEOAction_Moo" : "QCDLogDetCompactCloverEOAction";
+  }
 
   std::string LogParameters() override {
     std::stringstream os;
@@ -74,12 +94,28 @@ public:
   // Reconstruct the full even-parity clover block Mee from the compact
   // Diagonal/Triangle storage into a transient scratch CloverField on the
   // RB (even) grid.  ConvertLayout sets the scratch checkerboard to match.
+  // Parity == Odd: the odd block Moo instead (same RB grid object, checkerboard Odd); the names
+  // and every caller are kept from the even-only version so the diff stays local.  The callers'
+  // scratch is constructed on the default (Even) checkerboard and ConvertLayout's conformable()
+  // checks it against the source's, so the Odd branches set it first.
   void ReconstructEven(CloverField &out) {
+    if (Parity == Odd) {
+      out.Checkerboard() = Odd;
+      CompactWilsonCloverHelpers<Impl>::ConvertLayout(
+          FermOp.DiagonalOdd, FermOp.TriangleOdd, out);
+      return;
+    }
     CompactWilsonCloverHelpers<Impl>::ConvertLayout(
         FermOp.DiagonalEven, FermOp.TriangleEven, out);
   }
-  // Same for Mee^{-1} from the inverse Diagonal/Triangle storage.
+  // Same for Mee^{-1} (Moo^{-1} with Parity == Odd) from the inverse Diagonal/Triangle storage.
   void ReconstructInvEven(CloverField &out) {
+    if (Parity == Odd) {
+      out.Checkerboard() = Odd;
+      CompactWilsonCloverHelpers<Impl>::ConvertLayout(
+          FermOp.DiagonalInvOdd, FermOp.TriangleInvOdd, out);
+      return;
+    }
     CompactWilsonCloverHelpers<Impl>::ConvertLayout(
         FermOp.DiagonalInvEven, FermOp.TriangleInvEven, out);
   }
@@ -366,6 +402,9 @@ public:
       CloverField Slambda_e =
           Gamma(positive_sigma[k]) * CTInvEven;
       lambda_e[k] = TraceIndex<SpinIndex>(Slambda_e);
+      // TraceIndex returns a fresh Lattice on the default (Even) checkerboard; carry the block's
+      // so setCheckerboard below fills the right sites.  No-op for Even; required for Odd.
+      lambda_e[k].Checkerboard() = CTInvEven.Checkerboard();
     }
 
     // Push to full-grid Lattice<ColourMatrix> (only Even populated, Odd = 0)
@@ -408,6 +447,7 @@ public:
 private:
   FermionOperator &FermOp;
   int Nf;
+  int Parity;  // Even (default): -Nf ln|det Mee|; Odd: -Nf ln|det Moo|
 
   // Per-component timers (accumulate across deriv calls; printed on destruct).
   uint64_t n_deriv_ = 0;

@@ -10,6 +10,21 @@
 //
 // The force arises from the gauge dependence of the clover term on even sites,
 // computed via Cmunu staples (same machinery as WilsonCloverFermion::MDeriv).
+//
+// Parity (constructor argument, default Even = the behaviour above, byte-identical): the block
+// whose log-det this monomial carries must be the one the partner pseudofermion's Schur complement
+// divides out.  Odd-checkerboard pseudofermion (Grid's SchurDiagMooee on Odd, the MP strange):
+// det S_oo = det M / det Mee -> Even.  Even-checkerboard pseudofermion (Schur on Even,
+// OneFlavourSchurCloverRationalActionEven, and the QUDA strange force path
+// OneFlavourSchurCloverQudaForceRationalActionMP, matpc EVEN_EVEN_ASYMMETRIC):
+// det S_ee = det M / det Moo -> Odd.  With clover, det Mee != det Moo (site-local blocks
+// (4+m) + csw/2 σF on different sites), so the pairing is physics, not convention
+// (__docs/2026_10_02_strange_logdet_parity_mismatch.md).  Odd: S() (GPU and CPU) and both deriv
+// paths run the same code on CloverTermOdd / CloverTermInvOdd (Block(), BlockInv() below);
+// Lambda lives on odd sites, Even = 0.  Same change as QCDLogDetCompactCloverEOAction.h (the
+// compact operator).  Exactness check: grid-lqcd-workflow/5_studies/hasenbusch_tune/src/
+// logdet_parity/test_logdet_parity_noncompact.cc, S_odd(U) == S_even(U shifted by one site in
+// x), and likewise the force, to roundoff.  Memory: none (the operator stores both blocks).
 
 #include <Grid/qcd/action/fermion/WilsonCloverFermion.h>
 #include <Grid/algorithms/blas/BatchedBlas.h>
@@ -27,8 +42,10 @@ public:
 
   typedef WilsonCloverFermion<Impl, CloverHelpers> FermionOperator;
 
-  QCDLogDetCloverEOAction(FermionOperator &Op, int nf = 2)
-      : FermOp(Op), Nf(nf) {}
+  QCDLogDetCloverEOAction(FermionOperator &Op, int nf = 2, int parity = Even)
+      : FermOp(Op), Nf(nf), Parity(parity) {
+    GRID_ASSERT(parity == Even || parity == Odd);
+  }
 
   ~QCDLogDetCloverEOAction() {
     if (n_deriv_ > 0) {
@@ -45,7 +62,10 @@ public:
     }
   }
 
-  std::string action_name() override { return "QCDLogDetCloverEOAction"; }
+  // Even keeps the historical name (log lines unchanged); Odd says which block it carries.
+  std::string action_name() override {
+    return Parity == Odd ? "QCDLogDetCloverEOAction_Moo" : "QCDLogDetCloverEOAction";
+  }
 
   std::string LogParameters() override {
     std::stringstream os;
@@ -61,7 +81,8 @@ public:
   // GPU log|det| using cuBLAS getrfBatched: after LU factorisation, the
   // diagonal of U gives log|det| as Σ log|U_kk|.  Same machine-precision
   // result as Eigen.determinant() but avoids the per-site CPU dispatch.
-  // Even-parity only (matches CPU path which uses CloverTermEven).
+  // Takes the carried block (Block(): CloverTermEven by default, CloverTermOdd for Parity Odd),
+  // as the CPU path below does.
 #if defined(GRID_CUDA)
   RealD compute_logdet_gpu(CloverField &CT) {
     constexpr int N  = Ns * Impl::Dimension;     // 12 for Wilson SU(3)
@@ -166,7 +187,7 @@ public:
       return std::atoi(e);
     }();
     if (use_gpu) {
-      RealD logdet = compute_logdet_gpu(FermOp.CloverTermEven);
+      RealD logdet = compute_logdet_gpu(Block());
       FermOp.GaugeGrid()->GlobalSum(logdet);
       RealD action = -RealD(Nf) * logdet;
       std::cout << GridLogMessage << "[" << action_name()
@@ -176,10 +197,10 @@ public:
 #endif
 
     int DimRep = Impl::Dimension;
-    int lvol = FermOp.CloverTermEven.Grid()->lSites();
+    int lvol = Block().Grid()->lSites();
 
     std::vector<typename SiteClover::scalar_object> ct_lex(lvol);
-    unvectorizeToLexOrdArray(ct_lex, FermOp.CloverTermEven);
+    unvectorizeToLexOrdArray(ct_lex, Block());
 
     // OMP-parallel over sites.  Each thread keeps its own EigenM scratch and
     // partial logdet sum.  Equivalent at machine precision since logdet is a
@@ -223,10 +244,12 @@ public:
     GridBase *fgrid = FermOp.GaugeGrid();
 
     // Mee^{-1} on even sites, zero on odd — acts as the "propagator" Lambda.
+    // (Parity Odd: Moo^{-1} on odd sites, zero on even; setCheckerboard takes the sites from
+    // CloverTermInvOdd's own checkerboard, set by pickCheckerboard in ImportGauge.)
     auto t_cb0 = usecond();
     CloverField Lambda(fgrid);
     Lambda = Zero();
-    setCheckerboard(Lambda, FermOp.CloverTermInvEven);
+    setCheckerboard(Lambda, BlockInv());
     t_setcb_us_ += usecond() - t_cb0;
 
     auto t_lnk0 = usecond();
@@ -295,7 +318,7 @@ public:
     t_import_us_ += usecond() - t_imp0;
 
     GridBase *fgrid  = FermOp.GaugeGrid();
-    GridBase *rbgrid = FermOp.CloverTermInvEven.Grid();
+    GridBase *rbgrid = BlockInv().Grid();  // the same RB grid object for both parities
 
     auto t_lnk0 = usecond();
     std::vector<GaugeLinkField> Ulinks(Nd, fgrid);
@@ -325,8 +348,11 @@ public:
         GaugeLinkField(rbgrid), GaugeLinkField(rbgrid), GaugeLinkField(rbgrid)};
     for (int k = 0; k < 6; ++k) {
       CloverField Slambda_e =
-          Gamma(positive_sigma[k]) * FermOp.CloverTermInvEven;
+          Gamma(positive_sigma[k]) * BlockInv();
       lambda_e[k] = TraceIndex<SpinIndex>(Slambda_e);
+      // TraceIndex returns a fresh Lattice on the default (Even) checkerboard; carry the block's
+      // so setCheckerboard below fills the right sites.  No-op for Even; required for Odd.
+      lambda_e[k].Checkerboard() = BlockInv().Checkerboard();
     }
 
     // Push to full-grid Lattice<ColourMatrix> (only Even populated, Odd = 0)
@@ -369,6 +395,14 @@ public:
 private:
   FermionOperator &FermOp;
   int Nf;
+  int Parity;  // Even (default): -Nf ln|det Mee|; Odd: -Nf ln|det Moo|
+
+  // The carried clover block and its inverse (RB fields, checkerboard set by ImportGauge's
+  // pickCheckerboard).  Even returns exactly the members the even-only version used.
+  CloverField &Block() { return Parity == Odd ? FermOp.CloverTermOdd : FermOp.CloverTermEven; }
+  CloverField &BlockInv() {
+    return Parity == Odd ? FermOp.CloverTermInvOdd : FermOp.CloverTermInvEven;
+  }
 
   // Per-component timers (accumulate across deriv calls; printed on destruct).
   uint64_t n_deriv_ = 0;
